@@ -36,9 +36,11 @@ class TurboService : Service() {
     private var paused = false
     private var granted = false
     private var lastTurbo = 0L
+    private var lastQuery = 0L
     private var current = ""
     private var goodLayer = ""
     private var goodPkg = ""
+    private val ignore = setOf("com.android.systemui", "android")
     @Volatile private var fpsBusy = false
     private var box: LinearLayout? = null
     private var fpsText: TextView? = null
@@ -131,13 +133,18 @@ class TurboService : Service() {
     private fun checkGame() {
         val usm = getSystemService(UsageStatsManager::class.java)
         val now = System.currentTimeMillis()
-        val ev = usm.queryEvents(now - 15000, now)
+        val from = if (lastQuery == 0L) now - 6 * 3600_000L else lastQuery - 2000L
+        lastQuery = now
+        val ev = usm.queryEvents(from, now)
         val e = UsageEvents.Event()
         while (ev.hasNextEvent()) {
             ev.getNextEvent(e)
-            if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) current = e.packageName
+            if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND &&
+                e.packageName !in ignore && !e.packageName.contains("inputmethod")
+            ) current = e.packageName
         }
         val game = isGame(current)
+        if (game && box != null && box?.isAttachedToWindow == false) box = null
         if (game && box == null) showOverlay()
         if (!game && box != null) hideOverlay()
         if (game) measureFps()
