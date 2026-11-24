@@ -1,5 +1,6 @@
 package com.calamity.hub
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -21,7 +22,6 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import rikka.shizuku.Shizuku
@@ -37,13 +37,24 @@ class TurboService : Service() {
     private var granted = false
     private var lastTurbo = 0L
     private var lastQuery = 0L
+    private var lastClean = 0L
     private var current = ""
+    private var statPkg = ""
+    private var wasGame = false
     private var goodLayer = ""
     private var goodPkg = ""
     private val ignore = setOf("com.android.systemui", "android")
+
+    private var sessionStart = 0L
+    private var sum = 0L
+    private var cnt = 0
+    private var minFps = Int.MAX_VALUE
+    private var expanded = false
+
     @Volatile private var fpsBusy = false
     private var box: LinearLayout? = null
     private var fpsText: TextView? = null
+    private var detailText: TextView? = null
     private var wm: WindowManager? = null
 
     private val binderListener = Shizuku.OnBinderReceivedListener { turbo() }
@@ -130,6 +141,20 @@ class TurboService : Service() {
         } catch (e: Exception) { false }
     }
 
+    private fun onGameStart() {
+        statPkg = current
+        sessionStart = System.currentTimeMillis()
+        sum = 0L
+        cnt = 0
+        minFps = Int.MAX_VALUE
+        goodLayer = ""
+        val clean = getSharedPreferences("hub", MODE_PRIVATE).getBoolean("clean", true)
+        if (clean && ready() && System.currentTimeMillis() - lastClean > 180_000L) {
+            lastClean = System.currentTimeMillis()
+            thread { try { Sh.run("am kill-all") } catch (e: Throwable) {} }
+        }
+    }
+
     private fun checkGame() {
         val usm = getSystemService(UsageStatsManager::class.java)
         val now = System.currentTimeMillis()
@@ -144,17 +169,26 @@ class TurboService : Service() {
             ) current = e.packageName
         }
         val game = isGame(current)
+        if (game && (!wasGame || current != statPkg)) onGameStart()
+        wasGame = game
+        if (!game) statPkg = ""
         if (game && box != null && box?.isAttachedToWindow == false) box = null
         if (game && box == null) showOverlay()
         if (!game && box != null) hideOverlay()
         if (game) measureFps()
     }
 
-    private fun item(label: String, f: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        textSize = 12f
-        setOnClickListener { f() }
+    private fun detailString(): String {
+        val am = getSystemService(ActivityManager::class.java)
+        val mi = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        val freeMb = mi.availMem / 1048576
+        val totalMb = mi.totalMem / 1048576
+        val avg = if (cnt > 0) (sum / cnt).toInt() else 0
+        val mn = if (minFps == Int.MAX_VALUE) 0 else minFps
+        val secs = (System.currentTimeMillis() - sessionStart) / 1000
+        val temp = "%.1f".format(batteryTemp())
+        return "Média $avg  Mín $mn\nTemp $temp°C\nRAM livre $freeMb/$totalMb MB\nTempo ${secs / 60}:${"%02d".format(secs % 60)}"
     }
 
     private fun showOverlay() {
@@ -171,14 +205,14 @@ class TurboService : Service() {
             setTextColor(Color.GREEN)
             textSize = 15f
         }
-        val menu = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
+        val detail = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            visibility = if (expanded) View.VISIBLE else View.GONE
+            if (expanded) text = detailString()
         }
-        menu.addView(item("WhatsApp flutuante") { floatApp("com.whatsapp") })
-        menu.addView(item("YouTube flutuante") { floatApp("com.google.android.youtube") })
         b.addView(fps)
-        b.addView(menu)
+        b.addView(detail)
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -196,7 +230,7 @@ class TurboService : Service() {
         var ox = 0
         var oy = 0
         var moved = false
-        fps.setOnTouchListener { _, ev ->
+        b.setOnTouchListener { _, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> { sx = ev.rawX; sy = ev.rawY; ox = lp.x; oy = lp.y; moved = false }
                 MotionEvent.ACTION_MOVE -> {
@@ -208,7 +242,10 @@ class TurboService : Service() {
                     w.updateViewLayout(b, lp)
                 }
                 MotionEvent.ACTION_UP -> if (!moved) {
-                    menu.visibility = if (menu.visibility == View.GONE) View.VISIBLE else View.GONE
+                    expanded = !expanded
+                    detail.visibility = if (expanded) View.VISIBLE else View.GONE
+                    if (expanded) detail.text = detailString()
+                    w.updateViewLayout(b, lp)
                 }
             }
             true
@@ -216,20 +253,14 @@ class TurboService : Service() {
         w.addView(b, lp)
         box = b
         fpsText = fps
+        detailText = detail
     }
 
     private fun hideOverlay() {
         try { box?.let { wm?.removeView(it) } } catch (e: Throwable) {}
         box = null
         fpsText = null
-    }
-
-    private fun floatApp(pkg: String) {
-        thread {
-            try {
-                Sh.run("settings put global enable_freeform_support 1; settings put global force_resizable_activities 1; am start --windowingMode 5 -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p $pkg")
-            } catch (e: Throwable) {}
-        }
+        detailText = null
     }
 
     private fun fpsOf(layer: String): Int {
@@ -265,8 +296,16 @@ class TurboService : Service() {
                     }
                 }
             } catch (e: Throwable) {}
+            if (fps > 0) {
+                sum += fps
+                cnt += 1
+                if (fps < minFps) minFps = fps
+            }
             val txt = if (fps >= 0) "FPS $fps" else "FPS n/d"
-            h.post { fpsText?.text = txt }
+            h.post {
+                fpsText?.text = txt
+                if (expanded) detailText?.text = detailString()
+            }
             fpsBusy = false
         }
     }
