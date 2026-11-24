@@ -24,6 +24,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import org.json.JSONArray
+import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import kotlin.concurrent.thread
 import kotlin.math.abs
@@ -49,6 +51,8 @@ class TurboService : Service() {
     private var sum = 0L
     private var cnt = 0
     private var minFps = Int.MAX_VALUE
+    private var maxTemp = 0f
+    private var modeLabel = "Normal"
     private var expanded = false
 
     @Volatile private var fpsBusy = false
@@ -80,6 +84,7 @@ class TurboService : Service() {
 
     override fun onDestroy() {
         h.removeCallbacks(loop)
+        try { endSession() } catch (e: Throwable) {}
         hideOverlay()
         Shizuku.removeBinderReceivedListener(binderListener)
         thread { try { if (Shizuku.pingBinder()) Sh.run(off) } catch (e: Throwable) {} }
@@ -147,12 +152,52 @@ class TurboService : Service() {
         sum = 0L
         cnt = 0
         minFps = Int.MAX_VALUE
+        maxTemp = 0f
+        modeLabel = "Normal"
         goodLayer = ""
+        val pkg = statPkg
+        if (ready()) {
+            thread {
+                try {
+                    val c = Sh.run("device_config get game_overlay $pkg").second
+                    modeLabel = when {
+                        c.contains("fps=30") -> "Estável"
+                        c.contains("mode=2") -> "Performance"
+                        else -> "Normal"
+                    }
+                } catch (e: Throwable) {}
+            }
+        }
         val clean = getSharedPreferences("hub", MODE_PRIVATE).getBoolean("clean", true)
         if (clean && ready() && System.currentTimeMillis() - lastClean > 180_000L) {
             lastClean = System.currentTimeMillis()
             thread { try { Sh.run("am kill-all") } catch (e: Throwable) {} }
         }
+    }
+
+    private fun endSession() {
+        if (statPkg.isEmpty()) return
+        val secs = (System.currentTimeMillis() - sessionStart) / 1000
+        if (secs >= 60) {
+            try {
+                val p = getSharedPreferences("hub", MODE_PRIVATE)
+                val arr = JSONArray(p.getString("history", "[]"))
+                val o = JSONObject()
+                o.put("pkg", statPkg)
+                o.put("t", sessionStart)
+                o.put("secs", secs)
+                o.put("avg", if (cnt > 0) (sum / cnt).toInt() else -1)
+                o.put("min", if (minFps == Int.MAX_VALUE) -1 else minFps)
+                o.put("temp", maxTemp.toDouble())
+                o.put("mode", modeLabel + " + Turbo")
+                val out = JSONArray()
+                val start = if (arr.length() >= 100) arr.length() - 99 else 0
+                for (i in start until arr.length()) out.put(arr.get(i))
+                out.put(o)
+                p.edit().putString("history", out.toString()).apply()
+            } catch (e: Throwable) {}
+        }
+        statPkg = ""
     }
 
     private fun checkGame() {
@@ -169,9 +214,13 @@ class TurboService : Service() {
             ) current = e.packageName
         }
         val game = isGame(current)
+        if (wasGame && (!game || current != statPkg)) endSession()
         if (game && (!wasGame || current != statPkg)) onGameStart()
         wasGame = game
-        if (!game) statPkg = ""
+        if (game) {
+            val t = batteryTemp()
+            if (t > maxTemp) maxTemp = t
+        }
         if (game && box != null && box?.isAttachedToWindow == false) box = null
         if (game && box == null) showOverlay()
         if (!game && box != null) hideOverlay()
@@ -257,56 +306,4 @@ class TurboService : Service() {
     }
 
     private fun hideOverlay() {
-        try { box?.let { wm?.removeView(it) } } catch (e: Throwable) {}
-        box = null
-        fpsText = null
-        detailText = null
-    }
-
-    private fun fpsOf(layer: String): Int {
-        val out = Sh.run("dumpsys SurfaceFlinger --latency '$layer'").second.lines()
-        val ts = out.drop(1)
-            .mapNotNull { it.trim().split(Regex("\\s+")).getOrNull(1)?.toLongOrNull() }
-            .filter { it > 0 && it < Long.MAX_VALUE }
-        if (ts.size < 3) return -1
-        val newest = ts.max()
-        if (System.nanoTime() - newest > 2_000_000_000L) return 0
-        val win = ts.filter { it >= newest - 1_000_000_000L }
-        val span = win.max() - win.min()
-        return if (win.size > 2 && span > 0) Math.round((win.size - 1) * 1e9 / span).toInt() else -1
-    }
-
-    private fun measureFps() {
-        if (fpsBusy || !ready()) return
-        fpsBusy = true
-        val pkg = current
-        thread {
-            var fps = -1
-            try {
-                if (goodLayer.isNotEmpty() && goodPkg == pkg) fps = fpsOf(goodLayer)
-                if (fps < 0) {
-                    val c = Sh.run("dumpsys SurfaceFlinger --list").second.lines()
-                        .map { it.trim() }
-                        .filter { it.contains(pkg) }
-                        .sortedBy { if (it.contains("SurfaceView")) 0 else 1 }
-                        .take(4)
-                    for (l in c) {
-                        val f = fpsOf(l)
-                        if (f >= 0) { fps = f; goodLayer = l; goodPkg = pkg; break }
-                    }
-                }
-            } catch (e: Throwable) {}
-            if (fps > 0) {
-                sum += fps
-                cnt += 1
-                if (fps < minFps) minFps = fps
-            }
-            val txt = if (fps >= 0) "FPS $fps" else "FPS n/d"
-            h.post {
-                fpsText?.text = txt
-                if (expanded) detailText?.text = detailString()
-            }
-            fpsBusy = false
-        }
-    }
-}
+        try { box?.let { wm?.removeView(it
