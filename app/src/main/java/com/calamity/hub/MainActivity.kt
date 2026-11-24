@@ -11,7 +11,11 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import org.json.JSONArray
 import rikka.shizuku.Shizuku
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.concurrent.thread
 
 /** Roda um comando de shell com privilégio via Shizuku (sem root). */
@@ -34,6 +38,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var log: TextView
     private lateinit var alwaysBtn: Button
+    private lateinit var cleanBtn: Button
     private lateinit var root: LinearLayout
 
     private val permListener =
@@ -55,7 +60,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#101418"))
         }
         root.addView(TextView(this).apply {
-            text = "Calamity Hub  v0.4"
+            text = "Calamity Hub  v0.6"
             textSize = 24f
             setTextColor(Color.WHITE)
         })
@@ -81,6 +86,12 @@ class MainActivity : Activity() {
         })
         root.addView(btn("2. Escolher meus jogos") { pickGames() })
 
+        root.addView(btn("Histórico de partidas") { showHistory() })
+        root.addView(btn("Apagar histórico") {
+            prefs().edit().remove("history").apply()
+            log.text = "Histórico apagado."
+        })
+
         root.addView(btn("Modo Performance nos meus jogos (70%)") {
             val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
             if (games.isEmpty()) {
@@ -88,6 +99,16 @@ class MainActivity : Activity() {
             } else {
                 exec(games.joinToString("; ") {
                     "device_config put game_overlay $it mode=2,downscaleFactor=0.7; cmd game mode performance $it; echo 'Performance ligado: $it'"
+                } + "; echo 'Feche e abra o jogo de novo'")
+            }
+        })
+        root.addView(btn("Modo Estável: 60% + travar em 30 FPS") {
+            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
+            if (games.isEmpty()) {
+                log.text = "Escolha seus jogos primeiro (botão 2)."
+            } else {
+                exec(games.joinToString("; ") {
+                    "device_config put game_overlay $it mode=2,downscaleFactor=0.6,fps=30; cmd game mode performance $it; echo 'Estável ligado: $it'"
                 } + "; echo 'Feche e abra o jogo de novo'")
             }
         })
@@ -101,6 +122,16 @@ class MainActivity : Activity() {
                 })
             }
         })
+
+        cleanBtn = btn("") {
+            val on = !prefs().getBoolean("clean", true)
+            prefs().edit().putBoolean("clean", on).apply()
+            updateCleanText()
+        }
+        root.addView(cleanBtn)
+        root.addView(sh("Limpar cache dos apps",
+            "pm trim-caches 999G; echo 'Cache limpo'"))
+
         root.addView(sh("Tela fixa em 90Hz (ON)",
             "settings put system min_refresh_rate 90.0; settings put system peak_refresh_rate 90.0; echo '90Hz fixo ligado'"))
         root.addView(sh("Tela 90Hz automática (OFF)",
@@ -110,7 +141,6 @@ class MainActivity : Activity() {
         root.addView(sh("Toque normal (OFF)",
             "settings put secure long_press_timeout 400; settings put secure multi_press_timeout 300; echo 'Toque normal'"))
 
-        root.addView(sh("Diagnóstico de janelas", "pm list packages | grep -i -E 'float|multiwindow|multi_window|panel|sidebar|shalltry|transsion'; echo ---; pm list packages | grep -i -E 'whatsapp|youtube'"))
         root.addView(sh("Resolução leve (80%) ON",
             "d=\$(wm density | grep -o '[0-9]*' | head -1); wm size 576x1290; wm density \$((d*80/100)); echo 'Resolução leve ligada'"))
         root.addView(sh("Resolução normal (OFF)", "wm size reset; wm density reset; echo 'Resolução normal'"))
@@ -136,6 +166,7 @@ class MainActivity : Activity() {
         Shizuku.addBinderDeadListener(deadListener)
 
         updateAlwaysText()
+        updateCleanText()
         if (prefs().getBoolean("always", false)) {
             startForegroundService(Intent(this, TurboService::class.java))
         }
@@ -161,6 +192,10 @@ class MainActivity : Activity() {
         alwaysBtn.text = "Turbo SEMPRE ligado: " + if (prefs().getBoolean("always", false)) "ON ✔" else "OFF"
     }
 
+    private fun updateCleanText() {
+        cleanBtn.text = "Limpar RAM ao abrir jogo: " + if (prefs().getBoolean("clean", true)) "ON ✔" else "OFF"
+    }
+
     private fun pickGames() {
         val pm = packageManager
         val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -178,6 +213,54 @@ class MainActivity : Activity() {
             .setPositiveButton("Salvar") { _, _ ->
                 prefs().edit().putStringSet("games", saved).apply()
             }
+            .show()
+    }
+
+    private fun appLabel(pkg: String): String = try {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+    } catch (e: Throwable) { pkg }
+
+    private fun showHistory() {
+        val arr = try { JSONArray(prefs().getString("history", "[]")) } catch (e: Throwable) { JSONArray() }
+        if (arr.length() == 0) {
+            log.text = "Ainda sem partidas. Jogue mais de 1 minuto com o Turbo SEMPRE ligado."
+            return
+        }
+        val groups = LinkedHashMap<String, MutableList<Int>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val avg = o.optInt("avg", -1)
+            if (avg >= 0) {
+                val key = appLabel(o.getString("pkg")) + " — " + o.optString("mode", "?")
+                groups.getOrPut(key) { mutableListOf() }.add(avg)
+            }
+        }
+        val sb = StringBuilder()
+        sb.append("RESUMO (FPS médio)\n")
+        if (groups.isEmpty()) sb.append("Sem dados de FPS ainda.\n")
+        for ((k, v) in groups) {
+            sb.append("• $k: ${v.average().toInt()} (${v.size} partidas)\n")
+        }
+        sb.append("\nÚLTIMAS PARTIDAS\n")
+        val fmt = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
+        var shown = 0
+        var i = arr.length() - 1
+        while (i >= 0 && shown < 15) {
+            val o = arr.getJSONObject(i)
+            val avg = o.optInt("avg", -1)
+            val mn = o.optInt("min", -1)
+            val secs = o.optLong("secs", 0)
+            val fpsTxt = if (avg >= 0) "média $avg, mín $mn" else "FPS n/d"
+            sb.append("\n${appLabel(o.getString("pkg"))}\n")
+            sb.append("${fmt.format(Date(o.optLong("t", 0)))} • ${secs / 60} min • $fpsTxt\n")
+            sb.append("Pico ${"%.1f".format(o.optDouble("temp", 0.0))}°C • ${o.optString("mode", "?")}\n")
+            shown++
+            i--
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Histórico de partidas")
+            .setMessage(sb.toString())
+            .setPositiveButton("Fechar", null)
             .show()
     }
 
