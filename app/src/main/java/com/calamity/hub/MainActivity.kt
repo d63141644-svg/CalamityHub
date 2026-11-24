@@ -60,7 +60,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#101418"))
         }
         root.addView(TextView(this).apply {
-            text = "Calamity Hub  v0.6"
+            text = "Calamity Hub  v0.7"
             textSize = 24f
             setTextColor(Color.WHITE)
         })
@@ -119,6 +119,27 @@ class MainActivity : Activity() {
             } else {
                 exec(games.joinToString("; ") {
                     "cmd game mode standard $it; device_config delete game_overlay $it; echo 'Normal: $it'"
+                })
+            }
+        })
+
+        root.addView(btn("Otimizar meus jogos (compilar)") {
+            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
+            if (games.isEmpty()) {
+                log.text = "Escolha seus jogos primeiro (botão 2)."
+            } else {
+                exec(games.joinToString("; ") {
+                    "echo 'Compilando $it...'; cmd package compile -m speed -f $it"
+                } + "; echo 'Pronto'")
+            }
+        })
+        root.addView(btn("Desfazer otimização dos jogos") {
+            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
+            if (games.isEmpty()) {
+                log.text = "Escolha seus jogos primeiro (botão 2)."
+            } else {
+                exec(games.joinToString("; ") {
+                    "cmd package compile --reset $it; echo 'Padrão restaurado: $it'"
                 })
             }
         })
@@ -279,7 +300,7 @@ class MainActivity : Activity() {
             log.text = "Shizuku não está pronto. Veja o status acima."
             return
         }
-        log.text = "Executando..."
+        log.text = "Executando... (pode demorar, não saia do Hub)"
         thread {
             val r = try { Sh.run(cmd) } catch (e: Throwable) { -1 to "Erro: $e" }
             runOnUiThread { log.text = "código ${r.first}\n${r.second}" }
