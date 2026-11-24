@@ -55,7 +55,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#101418"))
         }
         root.addView(TextView(this).apply {
-            text = "Calamity Hub  v0.3"
+            text = "Calamity Hub  v0.4"
             textSize = 24f
             setTextColor(Color.WHITE)
         })
@@ -80,6 +80,36 @@ class MainActivity : Activity() {
             else refresh()
         })
         root.addView(btn("2. Escolher meus jogos") { pickGames() })
+
+        root.addView(btn("Modo Performance nos meus jogos (70%)") {
+            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
+            if (games.isEmpty()) {
+                log.text = "Escolha seus jogos primeiro (botão 2)."
+            } else {
+                exec(games.joinToString("; ") {
+                    "device_config put game_overlay $it mode=2,downscaleFactor=0.7; cmd game mode performance $it; echo 'Performance ligado: $it'"
+                } + "; echo 'Feche e abra o jogo de novo'")
+            }
+        })
+        root.addView(btn("Voltar meus jogos ao normal") {
+            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
+            if (games.isEmpty()) {
+                log.text = "Escolha seus jogos primeiro (botão 2)."
+            } else {
+                exec(games.joinToString("; ") {
+                    "cmd game mode standard $it; device_config delete game_overlay $it; echo 'Normal: $it'"
+                })
+            }
+        })
+        root.addView(sh("Tela fixa em 90Hz (ON)",
+            "settings put system min_refresh_rate 90.0; settings put system peak_refresh_rate 90.0; echo '90Hz fixo ligado'"))
+        root.addView(sh("Tela 90Hz automática (OFF)",
+            "settings delete system min_refresh_rate; settings delete system peak_refresh_rate; echo 'Voltou ao automático'"))
+        root.addView(sh("Toque mais rápido (ON)",
+            "settings put secure long_press_timeout 250; settings put secure multi_press_timeout 250; echo 'Toque rápido ligado'"))
+        root.addView(sh("Toque normal (OFF)",
+            "settings put secure long_press_timeout 400; settings put secure multi_press_timeout 300; echo 'Toque normal'"))
+
         root.addView(sh("Diagnóstico de janelas", "pm list packages | grep -i -E 'float|multiwindow|multi_window|panel|sidebar|shalltry|transsion'; echo ---; pm list packages | grep -i -E 'whatsapp|youtube'"))
         root.addView(sh("Resolução leve (80%) ON",
             "d=\$(wm density | grep -o '[0-9]*' | head -1); wm size 576x1290; wm density \$((d*80/100)); echo 'Resolução leve ligada'"))
