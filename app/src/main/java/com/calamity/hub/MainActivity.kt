@@ -80,6 +80,7 @@ class MainActivity : Activity() {
             else refresh()
         })
         root.addView(btn("2. Escolher meus jogos") { pickGames() })
+        root.addView(sh("Diagnóstico de janelas", "pm list packages | grep -i -E 'float|multiwindow|multi_window|panel|sidebar|shalltry|transsion'; echo ---; pm list packages | grep -i -E 'whatsapp|youtube'"))
         root.addView(sh("Resolução leve (80%) ON",
             "d=\$(wm density | grep -o '[0-9]*' | head -1); wm size 576x1290; wm density \$((d*80/100)); echo 'Resolução leve ligada'"))
         root.addView(sh("Resolução normal (OFF)", "wm size reset; wm density reset; echo 'Resolução normal'"))
