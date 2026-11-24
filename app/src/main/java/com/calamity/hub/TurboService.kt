@@ -306,4 +306,56 @@ class TurboService : Service() {
     }
 
     private fun hideOverlay() {
-        try { box?.let { wm?.removeView(it
+        try { box?.let { wm?.removeView(it) } } catch (e: Throwable) {}
+        box = null
+        fpsText = null
+        detailText = null
+    }
+
+    private fun fpsOf(layer: String): Int {
+        val out = Sh.run("dumpsys SurfaceFlinger --latency '$layer'").second.lines()
+        val ts = out.drop(1)
+            .mapNotNull { it.trim().split(Regex("\\s+")).getOrNull(1)?.toLongOrNull() }
+            .filter { it > 0 && it < Long.MAX_VALUE }
+        if (ts.size < 3) return -1
+        val newest = ts.max()
+        if (System.nanoTime() - newest > 2_000_000_000L) return 0
+        val win = ts.filter { it >= newest - 1_000_000_000L }
+        val span = win.max() - win.min()
+        return if (win.size > 2 && span > 0) Math.round((win.size - 1) * 1e9 / span).toInt() else -1
+    }
+
+    private fun measureFps() {
+        if (fpsBusy || !ready()) return
+        fpsBusy = true
+        val pkg = current
+        thread {
+            var fps = -1
+            try {
+                if (goodLayer.isNotEmpty() && goodPkg == pkg) fps = fpsOf(goodLayer)
+                if (fps < 0) {
+                    val c = Sh.run("dumpsys SurfaceFlinger --list").second.lines()
+                        .map { it.trim() }
+                        .filter { it.contains(pkg) }
+                        .sortedBy { if (it.contains("SurfaceView")) 0 else 1 }
+                        .take(4)
+                    for (l in c) {
+                        val f = fpsOf(l)
+                        if (f >= 0) { fps = f; goodLayer = l; goodPkg = pkg; break }
+                    }
+                }
+            } catch (e: Throwable) {}
+            if (fps > 0) {
+                sum += fps
+                cnt += 1
+                if (fps < minFps) minFps = fps
+            }
+            val txt = if (fps >= 0) "FPS $fps" else "FPS n/d"
+            h.post {
+                fpsText?.text = txt
+                if (expanded) detailText?.text = detailString()
+            }
+            fpsBusy = false
+        }
+    }
+}
