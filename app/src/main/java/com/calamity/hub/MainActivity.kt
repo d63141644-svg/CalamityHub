@@ -1,8 +1,11 @@
 package com.calamity.hub
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
@@ -30,21 +33,29 @@ object Sh {
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var log: TextView
+    private lateinit var alwaysBtn: Button
+    private lateinit var root: LinearLayout
 
     private val permListener =
         Shizuku.OnRequestPermissionResultListener { _, _ -> runOnUiThread { refresh() } }
     private val binderListener = Shizuku.OnBinderReceivedListener { runOnUiThread { refresh() } }
     private val deadListener = Shizuku.OnBinderDeadListener { runOnUiThread { refresh() } }
 
+    private fun prefs() = getSharedPreferences("hub", MODE_PRIVATE)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
+        ) requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
+
+        root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(40, 80, 40, 40)
             setBackgroundColor(Color.parseColor("#101418"))
         }
         root.addView(TextView(this).apply {
-            text = "Calamity Hub  v0.1"
+            text = "Calamity Hub  v0.3"
             textSize = 24f
             setTextColor(Color.WHITE)
         })
@@ -55,23 +66,31 @@ class MainActivity : Activity() {
         }
         root.addView(status)
 
+        alwaysBtn = btn("") {
+            val on = !prefs().getBoolean("always", false)
+            prefs().edit().putBoolean("always", on).apply()
+            val i = Intent(this, TurboService::class.java)
+            if (on) startForegroundService(i) else stopService(i)
+            updateAlwaysText()
+        }
+        root.addView(alwaysBtn)
         root.addView(btn("1. Dar permissão ao Shizuku") {
             if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED)
                 Shizuku.requestPermission(100)
             else refresh()
         })
-        root.addView(btn("2. Testar se meu celular aceita o Turbo") {
-            exec("cmd power help | grep -i fixed-performance || echo 'NÃO ENCONTRADO: este celular não tem o comando'")
-        })
-        root.addView(btn("TURBO  ON") {
-            exec("cmd power set-fixed-performance-mode-enabled true && echo 'Turbo ligado'")
-        })
-        root.addView(btn("TURBO  OFF") {
-            exec("cmd power set-fixed-performance-mode-enabled false && echo 'Turbo desligado'")
-        })
-        root.addView(btn("Auto-início do Shizuku (conceder WRITE_SECURE_SETTINGS)") {
-            exec("pm grant moe.shizuku.privileged.api android.permission.WRITE_SECURE_SETTINGS && echo 'Permissão concedida ao Shizuku'")
-        })
+        root.addView(btn("2. Escolher meus jogos") { pickGames() })
+        root.addView(sh("Resolução leve (80%) ON",
+            "d=\$(wm density | grep -o '[0-9]*' | head -1); wm size 576x1290; wm density \$((d*80/100)); echo 'Resolução leve ligada'"))
+        root.addView(sh("Resolução normal (OFF)", "wm size reset; wm density reset; echo 'Resolução normal'"))
+        root.addView(sh("Animações rápidas (0.5x)",
+            "settings put global window_animation_scale 0.5; settings put global transition_animation_scale 0.5; settings put global animator_duration_scale 0.5; echo 'Animações 0.5x'"))
+        root.addView(sh("Animações normais (1x)",
+            "settings put global window_animation_scale 1; settings put global transition_animation_scale 1; settings put global animator_duration_scale 1; echo 'Animações 1x'"))
+        root.addView(sh("Otimizar apps (demora alguns minutos)",
+            "cmd package compile -m speed-profile -a"))
+        root.addView(sh("Auto-início do Shizuku (permissão)",
+            "pm grant moe.shizuku.privileged.api android.permission.WRITE_SECURE_SETTINGS && echo 'Permissão concedida'"))
 
         log = TextView(this).apply {
             textSize = 13f
@@ -84,6 +103,11 @@ class MainActivity : Activity() {
         Shizuku.addRequestPermissionResultListener(permListener)
         Shizuku.addBinderReceivedListenerSticky(binderListener)
         Shizuku.addBinderDeadListener(deadListener)
+
+        updateAlwaysText()
+        if (prefs().getBoolean("always", false)) {
+            startForegroundService(Intent(this, TurboService::class.java))
+        }
         refresh()
     }
 
@@ -98,6 +122,32 @@ class MainActivity : Activity() {
         text = label
         isAllCaps = false
         setOnClickListener { onClick() }
+    }
+
+    private fun sh(label: String, cmd: String) = btn(label) { exec(cmd) }
+
+    private fun updateAlwaysText() {
+        alwaysBtn.text = "Turbo SEMPRE ligado: " + if (prefs().getBoolean("always", false)) "ON ✔" else "OFF"
+    }
+
+    private fun pickGames() {
+        val pm = packageManager
+        val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(i, 0)
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .distinct()
+            .sortedBy { it.second.lowercase() }
+        val saved = (prefs().getStringSet("games", emptySet()) ?: emptySet()).toMutableSet()
+        val checked = BooleanArray(apps.size) { apps[it].first in saved }
+        AlertDialog.Builder(this)
+            .setTitle("Quais são seus jogos?")
+            .setMultiChoiceItems(apps.map { it.second }.toTypedArray(), checked) { _, w, c ->
+                if (c) saved.add(apps[w].first) else saved.remove(apps[w].first)
+            }
+            .setPositiveButton("Salvar") { _, _ ->
+                prefs().edit().putStringSet("games", saved).apply()
+            }
+            .show()
     }
 
     private fun refresh() {
@@ -117,7 +167,7 @@ class MainActivity : Activity() {
         }
         log.text = "Executando..."
         thread {
-            val r = try { Sh.run(cmd) } catch (e: Throwable) { -1 to "Erro: ${e}" }
+            val r = try { Sh.run(cmd) } catch (e: Throwable) { -1 to "Erro: $e" }
             runOnUiThread { log.text = "código ${r.first}\n${r.second}" }
         }
     }
