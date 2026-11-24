@@ -1,266 +1,174 @@
 package com.calamity.hub
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.Service
-import android.app.usage.UsageEvents
-import android.app.usage.UsageStatsManager
+import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.graphics.PixelFormat
-import android.os.BatteryManager
-import android.os.Handler
-import android.os.IBinder
-import android.os.Looper
-import android.provider.Settings
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.WindowManager
+import android.os.Build
+import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import rikka.shizuku.Shizuku
 import kotlin.concurrent.thread
-import kotlin.math.abs
 
-class TurboService : Service() {
-    private val h = Handler(Looper.getMainLooper())
-    private val lock = Any()
-    private val on = "cmd power set-fixed-performance-mode-enabled true"
-    private val off = "cmd power set-fixed-performance-mode-enabled false"
-    private var paused = false
-    private var granted = false
-    private var lastTurbo = 0L
-    private var current = ""
-    private var goodLayer = ""
-    private var goodPkg = ""
-    @Volatile private var fpsBusy = false
-    private var box: LinearLayout? = null
-    private var fpsText: TextView? = null
-    private var wm: WindowManager? = null
+/** Roda um comando de shell com privilégio via Shizuku (sem root). */
+object Sh {
+    fun run(cmd: String): Pair<Int, String> {
+        val m = Shizuku::class.java.getDeclaredMethod(
+            "newProcess",
+            Array<String>::class.java, Array<String>::class.java, String::class.java
+        )
+        m.isAccessible = true
+        val p = m.invoke(null, arrayOf("sh", "-c", cmd), null, null) as Process
+        val out = p.inputStream.bufferedReader().readText()
+        val err = p.errorStream.bufferedReader().readText()
+        val code = p.waitFor()
+        return code to (out + err).trim()
+    }
+}
 
-    private val binderListener = Shizuku.OnBinderReceivedListener { turbo() }
-    private val loop = object : Runnable {
-        override fun run() {
-            try { checkGame() } catch (e: Throwable) {}
-            if (System.currentTimeMillis() - lastTurbo > 120_000L) turbo()
-            h.postDelayed(this, 2000L)
+class MainActivity : Activity() {
+    private lateinit var status: TextView
+    private lateinit var log: TextView
+    private lateinit var alwaysBtn: Button
+    private lateinit var root: LinearLayout
+
+    private val permListener =
+        Shizuku.OnRequestPermissionResultListener { _, _ -> runOnUiThread { refresh() } }
+    private val binderListener = Shizuku.OnBinderReceivedListener { runOnUiThread { refresh() } }
+    private val deadListener = Shizuku.OnBinderDeadListener { runOnUiThread { refresh() } }
+
+    private fun prefs() = getSharedPreferences("hub", MODE_PRIVATE)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
+        ) requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
+
+        root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 80, 40, 40)
+            setBackgroundColor(Color.parseColor("#101418"))
         }
-    }
+        root.addView(TextView(this).apply {
+            text = "Calamity Hub  v0.3"
+            textSize = 24f
+            setTextColor(Color.WHITE)
+        })
+        status = TextView(this).apply {
+            textSize = 15f
+            setTextColor(Color.parseColor("#9FD3FF"))
+            setPadding(0, 24, 0, 24)
+        }
+        root.addView(status)
 
-    override fun onCreate() {
-        super.onCreate()
-        getSystemService(NotificationManager::class.java)
-            .createNotificationChannel(NotificationChannel("turbo", "Turbo", NotificationManager.IMPORTANCE_LOW))
-        startForeground(1, notif("Iniciando..."))
+        alwaysBtn = btn("") {
+            val on = !prefs().getBoolean("always", false)
+            prefs().edit().putBoolean("always", on).apply()
+            val i = Intent(this, TurboService::class.java)
+            if (on) startForegroundService(i) else stopService(i)
+            updateAlwaysText()
+        }
+        root.addView(alwaysBtn)
+        root.addView(btn("1. Dar permissão ao Shizuku") {
+            if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED)
+                Shizuku.requestPermission(100)
+            else refresh()
+        })
+        root.addView(btn("2. Escolher meus jogos") { pickGames() })
+        root.addView(sh("Resolução leve (80%) ON",
+            "d=\$(wm density | grep -o '[0-9]*' | head -1); wm size 576x1290; wm density \$((d*80/100)); echo 'Resolução leve ligada'"))
+        root.addView(sh("Resolução normal (OFF)", "wm size reset; wm density reset; echo 'Resolução normal'"))
+        root.addView(sh("Animações rápidas (0.5x)",
+            "settings put global window_animation_scale 0.5; settings put global transition_animation_scale 0.5; settings put global animator_duration_scale 0.5; echo 'Animações 0.5x'"))
+        root.addView(sh("Animações normais (1x)",
+            "settings put global window_animation_scale 1; settings put global transition_animation_scale 1; settings put global animator_duration_scale 1; echo 'Animações 1x'"))
+        root.addView(sh("Otimizar apps (demora alguns minutos)",
+            "cmd package compile -m speed-profile -a"))
+        root.addView(sh("Auto-início do Shizuku (permissão)",
+            "pm grant moe.shizuku.privileged.api android.permission.WRITE_SECURE_SETTINGS && echo 'Permissão concedida'"))
+
+        log = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.parseColor("#C8FFC8"))
+            setPadding(0, 32, 0, 0)
+        }
+        root.addView(log)
+        setContentView(ScrollView(this).apply { addView(root) })
+
+        Shizuku.addRequestPermissionResultListener(permListener)
         Shizuku.addBinderReceivedListenerSticky(binderListener)
-        h.post(loop)
-    }
+        Shizuku.addBinderDeadListener(deadListener)
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
-    override fun onBind(intent: Intent?): IBinder? = null
+        updateAlwaysText()
+        if (prefs().getBoolean("always", false)) {
+            startForegroundService(Intent(this, TurboService::class.java))
+        }
+        refresh()
+    }
 
     override fun onDestroy() {
-        h.removeCallbacks(loop)
-        hideOverlay()
+        Shizuku.removeRequestPermissionResultListener(permListener)
         Shizuku.removeBinderReceivedListener(binderListener)
-        thread { try { if (Shizuku.pingBinder()) Sh.run(off) } catch (e: Throwable) {} }
+        Shizuku.removeBinderDeadListener(deadListener)
         super.onDestroy()
     }
 
-    private fun ready() = Shizuku.pingBinder() &&
-        Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-
-    private fun notif(text: String): Notification =
-        Notification.Builder(this, "turbo")
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("Calamity Hub")
-            .setContentText(text)
-            .setOngoing(true)
-            .build()
-
-    private fun note(text: String) {
-        getSystemService(NotificationManager::class.java).notify(1, notif(text))
-    }
-
-    private fun batteryTemp(): Float {
-        val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        return (i?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10f
-    }
-
-    private fun turbo() {
-        lastTurbo = System.currentTimeMillis()
-        thread {
-            try {
-                synchronized(lock) {
-                    if (!ready()) { note("Aguardando o Shizuku..."); return@thread }
-                    if (!granted) {
-                        Sh.run("appops set $packageName SYSTEM_ALERT_WINDOW allow; appops set $packageName GET_USAGE_STATS allow")
-                        granted = true
-                    }
-                    val temp = batteryTemp()
-                    val t = "%.1f".format(temp)
-                    if (temp >= 43f) {
-                        if (!paused) { Sh.run(off); paused = true }
-                        note("Pausado: celular quente ($t°C)")
-                        return@thread
-                    }
-                    if (paused && temp > 40f) { note("Pausado: esfriando ($t°C)"); return@thread }
-                    paused = false
-                    val r = Sh.run(on)
-                    note(if (r.first == 0) "Turbo ligado • $t°C" else "Erro: ${r.second}")
-                }
-            } catch (e: Throwable) { note("Erro: $e") }
-        }
-    }
-
-    private fun isGame(pkg: String): Boolean {
-        if (pkg.isEmpty() || pkg == packageName) return false
-        val saved = getSharedPreferences("hub", MODE_PRIVATE).getStringSet("games", emptySet()) ?: emptySet()
-        if (pkg in saved) return true
-        return try {
-            packageManager.getApplicationInfo(pkg, 0).category == ApplicationInfo.CATEGORY_GAME
-        } catch (e: Exception) { false }
-    }
-
-    private fun checkGame() {
-        val usm = getSystemService(UsageStatsManager::class.java)
-        val now = System.currentTimeMillis()
-        val ev = usm.queryEvents(now - 15000, now)
-        val e = UsageEvents.Event()
-        while (ev.hasNextEvent()) {
-            ev.getNextEvent(e)
-            if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) current = e.packageName
-        }
-        val game = isGame(current)
-        if (game && box == null) showOverlay()
-        if (!game && box != null) hideOverlay()
-        if (game) measureFps()
-    }
-
-    private fun item(label: String, f: () -> Unit) = Button(this).apply {
+    private fun btn(label: String, onClick: () -> Unit) = Button(this).apply {
         text = label
         isAllCaps = false
-        textSize = 12f
-        setOnClickListener { f() }
+        setOnClickListener { onClick() }
     }
 
-    private fun showOverlay() {
-        if (!Settings.canDrawOverlays(this)) return
-        val w = getSystemService(WindowManager::class.java)
-        wm = w
-        val b = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#AA000000"))
-            setPadding(16, 10, 16, 10)
-        }
-        val fps = TextView(this).apply {
-            text = "FPS --"
-            setTextColor(Color.GREEN)
-            textSize = 15f
-        }
-        val menu = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-        }
-        menu.addView(item("WhatsApp flutuante") { floatApp("com.whatsapp") })
-        menu.addView(item("YouTube flutuante") { floatApp("com.google.android.youtube") })
-        b.addView(fps)
-        b.addView(menu)
+    private fun sh(label: String, cmd: String) = btn(label) { exec(cmd) }
 
-        val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        )
-        lp.gravity = Gravity.TOP or Gravity.START
-        lp.x = 0
-        lp.y = 120
+    private fun updateAlwaysText() {
+        alwaysBtn.text = "Turbo SEMPRE ligado: " + if (prefs().getBoolean("always", false)) "ON ✔" else "OFF"
+    }
 
-        var sx = 0f
-        var sy = 0f
-        var ox = 0
-        var oy = 0
-        var moved = false
-        fps.setOnTouchListener { _, ev ->
-            when (ev.action) {
-                MotionEvent.ACTION_DOWN -> { sx = ev.rawX; sy = ev.rawY; ox = lp.x; oy = lp.y; moved = false }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (ev.rawX - sx).toInt()
-                    val dy = (ev.rawY - sy).toInt()
-                    if (abs(dx) > 10 || abs(dy) > 10) moved = true
-                    lp.x = ox + dx
-                    lp.y = oy + dy
-                    w.updateViewLayout(b, lp)
-                }
-                MotionEvent.ACTION_UP -> if (!moved) {
-                    menu.visibility = if (menu.visibility == View.GONE) View.VISIBLE else View.GONE
-                }
+    private fun pickGames() {
+        val pm = packageManager
+        val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(i, 0)
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .distinct()
+            .sortedBy { it.second.lowercase() }
+        val saved = (prefs().getStringSet("games", emptySet()) ?: emptySet()).toMutableSet()
+        val checked = BooleanArray(apps.size) { apps[it].first in saved }
+        AlertDialog.Builder(this)
+            .setTitle("Quais são seus jogos?")
+            .setMultiChoiceItems(apps.map { it.second }.toTypedArray(), checked) { _, w, c ->
+                if (c) saved.add(apps[w].first) else saved.remove(apps[w].first)
             }
-            true
-        }
-        w.addView(b, lp)
-        box = b
-        fpsText = fps
+            .setPositiveButton("Salvar") { _, _ ->
+                prefs().edit().putStringSet("games", saved).apply()
+            }
+            .show()
     }
 
-    private fun hideOverlay() {
-        try { box?.let { wm?.removeView(it) } } catch (e: Throwable) {}
-        box = null
-        fpsText = null
-    }
-
-    private fun floatApp(pkg: String) {
-        thread {
-            try {
-                Sh.run("settings put global enable_freeform_support 1; settings put global force_resizable_activities 1; am start --windowingMode 5 -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p $pkg")
-            } catch (e: Throwable) {}
+    private fun refresh() {
+        val running = Shizuku.pingBinder()
+        val granted = running && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        status.text = when {
+            !running -> "Shizuku: NÃO está rodando. Abra o Shizuku e toque em Iniciar."
+            !granted -> "Shizuku: rodando. Falta dar permissão (botão 1)."
+            else -> "Shizuku: rodando e autorizado ✔"
         }
     }
 
-    private fun fpsOf(layer: String): Int {
-        val out = Sh.run("dumpsys SurfaceFlinger --latency '$layer'").second.lines()
-        val ts = out.drop(1)
-            .mapNotNull { it.trim().split(Regex("\\s+")).getOrNull(1)?.toLongOrNull() }
-            .filter { it > 0 && it < Long.MAX_VALUE }
-        if (ts.size < 3) return -1
-        val newest = ts.max()
-        if (System.nanoTime() - newest > 2_000_000_000L) return 0
-        val win = ts.filter { it >= newest - 1_000_000_000L }
-        val span = win.max() - win.min()
-        return if (win.size > 2 && span > 0) Math.round((win.size - 1) * 1e9 / span).toInt() else -1
-    }
-
-    private fun measureFps() {
-        if (fpsBusy || !ready()) return
-        fpsBusy = true
-        val pkg = current
+    private fun exec(cmd: String) {
+        if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+            log.text = "Shizuku não está pronto. Veja o status acima."
+            return
+        }
+        log.text = "Executando..."
         thread {
-            var fps = -1
-            try {
-                if (goodLayer.isNotEmpty() && goodPkg == pkg) fps = fpsOf(goodLayer)
-                if (fps < 0) {
-                    val c = Sh.run("dumpsys SurfaceFlinger --list").second.lines()
-                        .map { it.trim() }
-                        .filter { it.contains(pkg) }
-                        .sortedBy { if (it.contains("SurfaceView")) 0 else 1 }
-                        .take(4)
-                    for (l in c) {
-                        val f = fpsOf(l)
-                        if (f >= 0) { fps = f; goodLayer = l; goodPkg = pkg; break }
-                    }
-                }
-            } catch (e: Throwable) {}
-            val txt = if (fps >= 0) "FPS $fps" else "FPS n/d"
-            h.post { fpsText?.text = txt }
-            fpsBusy = false
+            val r = try { Sh.run(cmd) } catch (e: Throwable) { -1 to "Erro: $e" }
+            runOnUiThread { log.text = "código ${r.first}\n${r.second}" }
         }
     }
 }
