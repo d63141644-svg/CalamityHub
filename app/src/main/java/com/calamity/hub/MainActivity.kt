@@ -11,11 +11,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import org.json.JSONArray
 import rikka.shizuku.Shizuku
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlin.concurrent.thread
 
 /** Roda um comando de shell com privilégio via Shizuku (sem root). */
@@ -48,6 +44,8 @@ class MainActivity : Activity() {
 
     private fun prefs() = getSharedPreferences("hub", MODE_PRIVATE)
 
+    private fun games(): Set<String> = prefs().getStringSet("games", emptySet()) ?: emptySet()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -60,7 +58,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#101418"))
         }
         root.addView(TextView(this).apply {
-            text = "Calamity Hub  v0.9"
+            text = "Calamity Hub  v1.0"
             textSize = 24f
             setTextColor(Color.WHITE)
         })
@@ -75,9 +73,8 @@ class MainActivity : Activity() {
             prefs().edit().putBoolean("always", false).apply()
             stopService(Intent(this, TurboService::class.java))
             updateAlwaysText()
-            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
-            val mine = games.joinToString("; ") {
-                "cmd game mode standard $it; device_config delete game_overlay $it"
+            val mine = games().joinToString("; ") { p ->
+                "cmd game mode standard $p; device_config delete game_overlay $p"
             }
             val parts = mutableListOf(
                 "cmd power set-fixed-performance-mode-enabled false",
@@ -89,9 +86,7 @@ class MainActivity : Activity() {
             parts.add("settings put global window_animation_scale 1")
             parts.add("settings put global transition_animation_scale 1")
             parts.add("settings put global animator_duration_scale 1")
-            parts.add("wm size reset")
-            parts.add("wm density reset")
-            parts.add("echo 'Tudo revertido ao padrão (90Hz não foi alterado). Reinicie o celular para garantir.'")
+            parts.add("echo 'Revertido ao padrão (90Hz e tamanho da tela não foram alterados).'")
             exec(parts.joinToString("; "))
         })
 
@@ -110,73 +105,31 @@ class MainActivity : Activity() {
         })
         root.addView(btn("2. Escolher meus jogos") { pickGames() })
 
-        root.addView(btn("Histórico de partidas") { showHistory() })
-        root.addView(btn("Apagar histórico") {
-            prefs().edit().remove("history").apply()
-            log.text = "Histórico apagado."
-        })
-
         root.addView(btn("Modo Performance nos meus jogos (70%)") {
-            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
-            if (games.isEmpty()) {
-                log.text = "Escolha seus jogos primeiro (botão 2)."
-            } else {
-                exec(games.joinToString("; ") {
-                    "device_config put game_overlay $it mode=2,downscaleFactor=0.7; cmd game mode performance $it; echo 'Performance ligado: $it'"
-                } + "; echo 'Feche e abra o jogo de novo'")
-            }
+            gamesCmd({ p ->
+                "device_config put game_overlay $p mode=2,downscaleFactor=0.7; cmd game mode performance $p; echo 'Performance ligado: $p'"
+            }, "echo 'Feche e abra o jogo de novo'")
         })
-        root.addView(btn("Modo Estável: 60% + travar em 30 FPS") {
-            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
-            if (games.isEmpty()) {
-                log.text = "Escolha seus jogos primeiro (botão 2)."
-            } else {
-                exec(games.joinToString("; ") {
-                    "device_config put game_overlay $it mode=2,downscaleFactor=0.6,fps=30; cmd game mode performance $it; echo 'Estável ligado: $it'"
-                } + "; echo 'Feche e abra o jogo de novo'")
-            }
-        })
-        root.addView(btn("Desativar Modo Performance (todos os jogos)") {
-            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
-            val mine = games.joinToString("; ") {
-                "cmd game mode standard $it; device_config delete game_overlay $it"
-            }
-            val all = "for p in \$(device_config list game_overlay | cut -d= -f1); do cmd game mode standard \$p; device_config delete game_overlay \$p; done"
-            val parts = mutableListOf(all)
-            if (mine.isNotEmpty()) parts.add(mine)
-            parts.add("echo 'Modo Performance desativado. Feche e abra o jogo de novo.'")
-            exec(parts.joinToString("; "))
+        root.addView(btn("Modo Estável: resolução normal + 40 FPS") {
+            gamesCmd({ p ->
+                "device_config put game_overlay $p mode=2,downscaleFactor=1.0,fps=40; cmd game mode performance $p; echo 'Estável 40 FPS ligado: $p'"
+            }, "echo 'Feche e abra o jogo de novo'")
         })
         root.addView(btn("Voltar meus jogos ao normal") {
-            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
-            if (games.isEmpty()) {
-                log.text = "Escolha seus jogos primeiro (botão 2)."
-            } else {
-                exec(games.joinToString("; ") {
-                    "cmd game mode standard $it; device_config delete game_overlay $it; echo 'Normal: $it'"
-                })
-            }
+            gamesCmd({ p ->
+                "cmd game mode standard $p; device_config delete game_overlay $p; echo 'Normal: $p'"
+            }, "echo 'Feche e abra o jogo de novo'")
         })
 
         root.addView(btn("Otimizar meus jogos (compilar)") {
-            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
-            if (games.isEmpty()) {
-                log.text = "Escolha seus jogos primeiro (botão 2)."
-            } else {
-                exec(games.joinToString("; ") {
-                    "echo 'Compilando $it...'; cmd package compile -m speed -f $it"
-                } + "; echo 'Pronto'")
-            }
+            gamesCmd({ p ->
+                "echo 'Compilando $p...'; cmd package compile -m speed -f $p"
+            }, "echo 'Pronto'")
         })
         root.addView(btn("Desfazer otimização dos jogos") {
-            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
-            if (games.isEmpty()) {
-                log.text = "Escolha seus jogos primeiro (botão 2)."
-            } else {
-                exec(games.joinToString("; ") {
-                    "cmd package compile --reset $it; echo 'Padrão restaurado: $it'"
-                })
-            }
+            gamesCmd({ p ->
+                "cmd package compile --reset $p; echo 'Padrão restaurado: $p'"
+            }, "echo 'Pronto'")
         })
 
         cleanBtn = btn("") {
@@ -185,8 +138,6 @@ class MainActivity : Activity() {
             updateCleanText()
         }
         root.addView(cleanBtn)
-        root.addView(sh("Limpar cache dos apps",
-            "pm trim-caches 999G; echo 'Cache limpo'"))
 
         root.addView(sh("Tela fixa em 90Hz (ON)",
             "settings put system min_refresh_rate 90.0; settings put system peak_refresh_rate 90.0; echo '90Hz fixo ligado'"))
@@ -196,10 +147,8 @@ class MainActivity : Activity() {
             "settings put secure long_press_timeout 250; settings put secure multi_press_timeout 250; echo 'Toque rápido ligado'"))
         root.addView(sh("Toque normal (OFF)",
             "settings delete secure long_press_timeout; settings delete secure multi_press_timeout; echo 'Toque normal'"))
-
-        root.addView(sh("Resolução leve (80%) ON",
-            "d=\$(wm density | grep -o '[0-9]*' | head -1); wm size 576x1290; wm density \$((d*80/100)); echo 'Resolução leve ligada'"))
-        root.addView(sh("Resolução normal (OFF)", "wm size reset; wm density reset; echo 'Resolução normal'"))
+        root.addView(sh("Diagnóstico de janelas",
+            "pm list packages | grep -i -E 'float|multiwindow|multi_window|panel|sidebar|shalltry|transsion'; echo ---; pm list packages | grep -i -E 'whatsapp|youtube'"))
         root.addView(sh("Animações rápidas (0.5x)",
             "settings put global window_animation_scale 0.5; settings put global transition_animation_scale 0.5; settings put global animator_duration_scale 0.5; echo 'Animações 0.5x'"))
         root.addView(sh("Animações normais (1x)",
@@ -244,6 +193,15 @@ class MainActivity : Activity() {
 
     private fun sh(label: String, cmd: String) = btn(label) { exec(cmd) }
 
+    private fun gamesCmd(each: (String) -> String, tail: String) {
+        val g = games()
+        if (g.isEmpty()) {
+            log.text = "Escolha seus jogos primeiro (botão 2)."
+            return
+        }
+        exec(g.joinToString("; ") { each(it) } + "; " + tail)
+    }
+
     private fun updateAlwaysText() {
         alwaysBtn.text = "Turbo SEMPRE ligado: " + if (prefs().getBoolean("always", false)) "ON ✔" else "OFF"
     }
@@ -259,7 +217,7 @@ class MainActivity : Activity() {
             .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
             .distinct()
             .sortedBy { it.second.lowercase() }
-        val saved = (prefs().getStringSet("games", emptySet()) ?: emptySet()).toMutableSet()
+        val saved = games().toMutableSet()
         val checked = BooleanArray(apps.size) { apps[it].first in saved }
         AlertDialog.Builder(this)
             .setTitle("Quais são seus jogos?")
@@ -269,54 +227,6 @@ class MainActivity : Activity() {
             .setPositiveButton("Salvar") { _, _ ->
                 prefs().edit().putStringSet("games", saved).apply()
             }
-            .show()
-    }
-
-    private fun appLabel(pkg: String): String = try {
-        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
-    } catch (e: Throwable) { pkg }
-
-    private fun showHistory() {
-        val arr = try { JSONArray(prefs().getString("history", "[]")) } catch (e: Throwable) { JSONArray() }
-        if (arr.length() == 0) {
-            log.text = "Ainda sem partidas. Jogue mais de 1 minuto com o Turbo SEMPRE ligado."
-            return
-        }
-        val groups = LinkedHashMap<String, MutableList<Int>>()
-        for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
-            val avg = o.optInt("avg", -1)
-            if (avg >= 0) {
-                val key = appLabel(o.getString("pkg")) + " — " + o.optString("mode", "?")
-                groups.getOrPut(key) { mutableListOf() }.add(avg)
-            }
-        }
-        val sb = StringBuilder()
-        sb.append("RESUMO (FPS médio)\n")
-        if (groups.isEmpty()) sb.append("Sem dados de FPS ainda.\n")
-        for ((k, v) in groups) {
-            sb.append("• $k: ${v.average().toInt()} (${v.size} partidas)\n")
-        }
-        sb.append("\nÚLTIMAS PARTIDAS\n")
-        val fmt = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
-        var shown = 0
-        var i = arr.length() - 1
-        while (i >= 0 && shown < 15) {
-            val o = arr.getJSONObject(i)
-            val avg = o.optInt("avg", -1)
-            val mn = o.optInt("min", -1)
-            val secs = o.optLong("secs", 0)
-            val fpsTxt = if (avg >= 0) "média $avg, mín $mn" else "FPS n/d"
-            sb.append("\n${appLabel(o.getString("pkg"))}\n")
-            sb.append("${fmt.format(Date(o.optLong("t", 0)))} • ${secs / 60} min • $fpsTxt\n")
-            sb.append("Pico ${"%.1f".format(o.optDouble("temp", 0.0))}°C • ${o.optString("mode", "?")}\n")
-            shown++
-            i--
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Histórico de partidas")
-            .setMessage(sb.toString())
-            .setPositiveButton("Fechar", null)
             .show()
     }
 
