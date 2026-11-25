@@ -5,8 +5,10 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -35,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var log: TextView
     private lateinit var alwaysBtn: Button
     private lateinit var cleanBtn: Button
+    private lateinit var autoBtn: Button
     private lateinit var root: LinearLayout
 
     private val permListener =
@@ -58,7 +61,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#101418"))
         }
         root.addView(TextView(this).apply {
-            text = "Calamity Hub  v1.0"
+            text = "Calamity Hub  v1.2"
             textSize = 24f
             setTextColor(Color.WHITE)
         })
@@ -139,6 +142,24 @@ class MainActivity : Activity() {
         }
         root.addView(cleanBtn)
 
+        root.addView(btn("🤖 Piloto: ativar na acessibilidade") {
+            if (games().isEmpty()) log.text = "Antes, marque o Oniro em '2. Escolher meus jogos'."
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        })
+        root.addView(btn("🤖 Piloto: liberar configurações restritas") {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+            )
+        })
+        autoBtn = btn("") {
+            val opts = intArrayOf(30, 60, 120, 240, 480)
+            val cur = prefs().getInt("auto_minutes", 60)
+            val nxt = opts[(opts.indexOf(cur) + 1) % opts.size]
+            prefs().edit().putInt("auto_minutes", nxt).apply()
+            updateAutoText()
+        }
+        root.addView(autoBtn)
+
         root.addView(sh("Tela fixa em 90Hz (ON)",
             "settings put system min_refresh_rate 90.0; settings put system peak_refresh_rate 90.0; echo '90Hz fixo ligado'"))
         root.addView(sh("Tela 90Hz automática (OFF)",
@@ -147,8 +168,6 @@ class MainActivity : Activity() {
             "settings put secure long_press_timeout 250; settings put secure multi_press_timeout 250; echo 'Toque rápido ligado'"))
         root.addView(sh("Toque normal (OFF)",
             "settings delete secure long_press_timeout; settings delete secure multi_press_timeout; echo 'Toque normal'"))
-        root.addView(sh("Diagnóstico de janelas",
-            "pm list packages | grep -i -E 'float|multiwindow|multi_window|panel|sidebar|shalltry|transsion'; echo ---; pm list packages | grep -i -E 'whatsapp|youtube'"))
         root.addView(sh("Animações rápidas (0.5x)",
             "settings put global window_animation_scale 0.5; settings put global transition_animation_scale 0.5; settings put global animator_duration_scale 0.5; echo 'Animações 0.5x'"))
         root.addView(sh("Animações normais (1x)",
@@ -172,6 +191,7 @@ class MainActivity : Activity() {
 
         updateAlwaysText()
         updateCleanText()
+        updateAutoText()
         if (prefs().getBoolean("always", false)) {
             startForegroundService(Intent(this, TurboService::class.java))
         }
@@ -208,6 +228,10 @@ class MainActivity : Activity() {
 
     private fun updateCleanText() {
         cleanBtn.text = "Limpar RAM ao abrir jogo: " + if (prefs().getBoolean("clean", true)) "ON ✔" else "OFF"
+    }
+
+    private fun updateAutoText() {
+        autoBtn.text = "🤖 Piloto para sozinho em: ${prefs().getInt("auto_minutes", 60)} min (toque p/ mudar)"
     }
 
     private fun pickGames() {
