@@ -60,7 +60,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#101418"))
         }
         root.addView(TextView(this).apply {
-            text = "Calamity Hub  v0.7"
+            text = "Calamity Hub  v0.8"
             textSize = 24f
             setTextColor(Color.WHITE)
         })
@@ -111,6 +111,19 @@ class MainActivity : Activity() {
                     "device_config put game_overlay $it mode=2,downscaleFactor=0.6,fps=30; cmd game mode performance $it; echo 'Estável ligado: $it'"
                 } + "; echo 'Feche e abra o jogo de novo'")
             }
+        })
+        root.addView(btn("Desativar Modo Performance (todos os jogos)") {
+            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
+            val mine = games.joinToString("; ") {
+                "cmd game mode standard $it; device_config delete game_overlay $it"
+            }
+            val all = "for p in \$(device_config list game_overlay | cut -d= -f1); do cmd game mode standard \$p; device_config delete game_overlay \$p; done"
+            val parts = mutableListOf(all)
+            if (mine.isNotEmpty()) parts.add(mine)
+            parts.add("wm size reset")
+            parts.add("wm density reset")
+            parts.add("echo 'Modo Performance desativado. Feche e abra o jogo de novo.'")
+            exec(parts.joinToString("; "))
         })
         root.addView(btn("Voltar meus jogos ao normal") {
             val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
