@@ -60,7 +60,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#101418"))
         }
         root.addView(TextView(this).apply {
-            text = "Calamity Hub  v0.8"
+            text = "Calamity Hub  v0.9"
             textSize = 24f
             setTextColor(Color.WHITE)
         })
@@ -70,6 +70,30 @@ class MainActivity : Activity() {
             setPadding(0, 24, 0, 24)
         }
         root.addView(status)
+
+        root.addView(btn("⚠ REVERTER TUDO (voltar ao padrão)") {
+            prefs().edit().putBoolean("always", false).apply()
+            stopService(Intent(this, TurboService::class.java))
+            updateAlwaysText()
+            val games = prefs().getStringSet("games", emptySet()) ?: emptySet()
+            val mine = games.joinToString("; ") {
+                "cmd game mode standard $it; device_config delete game_overlay $it"
+            }
+            val parts = mutableListOf(
+                "cmd power set-fixed-performance-mode-enabled false",
+                "for p in \$(device_config list game_overlay | cut -d= -f1); do cmd game mode standard \$p; device_config delete game_overlay \$p; done"
+            )
+            if (mine.isNotEmpty()) parts.add(mine)
+            parts.add("settings delete secure long_press_timeout")
+            parts.add("settings delete secure multi_press_timeout")
+            parts.add("settings put global window_animation_scale 1")
+            parts.add("settings put global transition_animation_scale 1")
+            parts.add("settings put global animator_duration_scale 1")
+            parts.add("wm size reset")
+            parts.add("wm density reset")
+            parts.add("echo 'Tudo revertido ao padrão (90Hz não foi alterado). Reinicie o celular para garantir.'")
+            exec(parts.joinToString("; "))
+        })
 
         alwaysBtn = btn("") {
             val on = !prefs().getBoolean("always", false)
@@ -120,8 +144,6 @@ class MainActivity : Activity() {
             val all = "for p in \$(device_config list game_overlay | cut -d= -f1); do cmd game mode standard \$p; device_config delete game_overlay \$p; done"
             val parts = mutableListOf(all)
             if (mine.isNotEmpty()) parts.add(mine)
-            parts.add("wm size reset")
-            parts.add("wm density reset")
             parts.add("echo 'Modo Performance desativado. Feche e abra o jogo de novo.'")
             exec(parts.joinToString("; "))
         })
@@ -173,7 +195,7 @@ class MainActivity : Activity() {
         root.addView(sh("Toque mais rápido (ON)",
             "settings put secure long_press_timeout 250; settings put secure multi_press_timeout 250; echo 'Toque rápido ligado'"))
         root.addView(sh("Toque normal (OFF)",
-            "settings put secure long_press_timeout 400; settings put secure multi_press_timeout 300; echo 'Toque normal'"))
+            "settings delete secure long_press_timeout; settings delete secure multi_press_timeout; echo 'Toque normal'"))
 
         root.addView(sh("Resolução leve (80%) ON",
             "d=\$(wm density | grep -o '[0-9]*' | head -1); wm size 576x1290; wm density \$((d*80/100)); echo 'Resolução leve ligada'"))
